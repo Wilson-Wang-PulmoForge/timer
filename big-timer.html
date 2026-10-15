@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big timer</title>
+<style>
+:root{--bg:#0e2a31;--fg:#eaf3ef;--mute:#8fb0ab;--line:#2a525b;--acc:#f0b84a;--ok:#7fd4a0}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
+main{width:100%;max-width:1400px}
+[hidden]{display:none!important}
+.task{font-size:clamp(1.8rem,6.5vw,5.5rem);font-weight:700;line-height:1.1;margin:0 auto .25em;max-width:94vw;overflow-wrap:anywhere}
+.time{font-size:clamp(3rem,17.5vw,20rem);font-weight:200;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em;margin:0}
+.time.done{color:var(--ok)}
+.bar{height:10px;background:var(--line);border-radius:99px;margin:2.5vh auto;max-width:94vw;overflow:hidden}
+.bar i{display:block;height:100%;width:100%;background:var(--acc);transition:width .25s linear}
+.note{color:var(--mute);font-size:1.1rem;min-height:1.6em;margin:.5em 0 1.5em}
+button{font:inherit;font-weight:600;font-size:1.1rem;padding:.8em 1.6em;border-radius:12px;border:2px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;margin:.3em}
+button:hover{border-color:var(--fg)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#1a1405}
+button:focus-visible,input:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+form{max-width:640px;margin:0 auto}
+h1{font-size:2rem;margin:0 0 1rem}
+label{display:block;text-align:left;color:var(--mute);margin:1.2em 0 .4em}
+input{font:inherit;color:var(--fg);background:#0a1f25;border:2px solid var(--line);border-radius:12px;padding:.7em .9em;width:100%}
+.hms{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.hms input{text-align:center;font-size:2rem;font-variant-numeric:tabular-nums}
+.hms span{display:block;text-align:center;color:var(--mute);font-size:.9rem;margin-top:.3em}
+.presets{margin:1em 0 0}
+.presets button{padding:.5em 1em;font-size:1rem;font-weight:500}
+.err{color:#ff9a8a;min-height:1.4em;margin:.8em 0 0}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <form id="setup" autocomplete="off">
+    <h1>Start a timer</h1>
+    <label for="task">Task</label>
+    <input id="task" type="text" maxlength="120" placeholder="What are you working on?">
+    <label>Length (up to 72 hours)</label>
+    <div class="hms">
+      <div><input id="h" type="number" min="0" max="72" value="0" aria-label="Hours"><span>hours</span></div>
+      <div><input id="m" type="number" min="0" max="59" value="25" aria-label="Minutes"><span>minutes</span></div>
+      <div><input id="s" type="number" min="0" max="59" value="0" aria-label="Seconds"><span>seconds</span></div>
+    </div>
+    <div class="presets" id="presets"></div>
+    <p class="err" id="err" role="alert"></p>
+    <button class="primary" type="submit">Start timer</button>
+  </form>
+
+  <section id="run" hidden>
+    <h1 class="task" id="taskOut"></h1>
+    <p class="time" id="time" aria-live="off">00:00:00</p>
+    <div class="bar"><i id="fill"></i></div>
+    <p class="note" id="note"></p>
+    <button id="toggle">Pause</button>
+    <button id="reset">Stop and reset</button>
+  </section>
+</main>
+
+<script>
+const KEY = 'bigTimer.v1';
+const MAX_MS = 72 * 3600 * 1000;
+const $ = id => document.getElementById(id);
+
+// State is stored as an absolute end time, so the countdown stays correct
+// even if this tab is closed or the computer sleeps. We only recompute on open.
+let st = load();
+let audio = null;
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || { status: 'idle' }; }
+  catch (e) { return { status: 'idle' }; }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} }
+
+function remaining() {
+  if (st.status === 'running') return Math.max(0, st.endAt - Date.now());
+  if (st.status === 'paused') return st.left;
+  return 0;
+}
+function fmt(ms) {
+  const t = Math.ceil(ms / 1000);
+  return [Math.floor(t / 3600), Math.floor(t % 3600 / 60), t % 60]
+    .map(n => String(n).padStart(2, '0')).join(':');
+}
+
+function beep() {
+  if (!audio) return;
+  [0, .5, 1].forEach(d => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(audio.destination);
+    g.gain.setValueAtTime(.2, audio.currentTime + d);
+    g.gain.exponentialRampToValueAtTime(.001, audio.currentTime + d + .35);
+    o.start(audio.currentTime + d); o.stop(audio.currentTime + d + .4);
+  });
+}
+
+function finish() {
+  const live = Date.now() - st.endAt < 5000; // only alert if it ended while watching
+  st.status = 'done'; save();
+  if (live) {
+    beep();
+    try { if (Notification.permission === 'granted') new Notification('Timer finished', { body: st.task || '' }); } catch (e) {}
+  }
+}
+
+function render() {
+  const idle = st.status === 'idle';
+  $('setup').hidden = !idle;
+  $('run').hidden = idle;
+  if (idle) { document.title = 'Big timer'; return; }
+
+  const left = remaining();
+  $('taskOut').textContent = st.task || 'Timer';
+  $('time').textContent = fmt(left);
+  $('time').classList.toggle('done', st.status === 'done');
+  $('fill').style.width = (st.total ? left / st.total * 100 : 0) + '%';
+  document.title = fmt(left) + (st.task ? ' · ' + st.task : '');
+
+  if (st.status === 'done') {
+    $('note').textContent = 'Finished ' + new Date(st.endAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+    $('toggle').textContent = 'Start a new timer';
+    $('reset').hidden = true;
+  } else {
+    $('note').textContent = st.status === 'paused' ? 'Paused' :
+      'Ends ' + new Date(st.endAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+    $('toggle').textContent = st.status === 'paused' ? 'Resume' : 'Pause';
+    $('reset').hidden = false;
+  }
+}
+
+function tick() {
+  if (st.status === 'running' && remaining() <= 0) finish();
+  render();
+}
+
+function setFields(ms) {
+  const t = Math.round(ms / 1000);
+  $('h').value = Math.floor(t / 3600);
+  $('m').value = Math.floor(t % 3600 / 60);
+  $('s').value = t % 60;
+}
+
+[['25 min', 25 * 60], ['50 min', 50 * 60], ['1 hour', 3600], ['8 hours', 8 * 3600], ['24 hours', 24 * 3600], ['72 hours', 72 * 3600]]
+  .forEach(([label, sec]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label;
+    b.onclick = () => setFields(sec * 1000);
+    $('presets').appendChild(b);
+  });
+
+$('setup').addEventListener('submit', e => {
+  e.preventDefault();
+  const num = id => Math.max(0, parseInt($(id).value, 10) || 0);
+  let total = (num('h') * 3600 + num('m') * 60 + num('s')) * 1000;
+  if (total <= 0) { $('err').textContent = 'Enter a length greater than zero.'; return; }
+  if (total > MAX_MS) { total = MAX_MS; setFields(total); }
+  $('err').textContent = '';
+  try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  try { if (Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+  st = { status: 'running', task: $('task').value.trim(), total, endAt: Date.now() + total };
+  save(); render();
+});
+
+$('toggle').onclick = () => {
+  if (st.status === 'running') { st.left = remaining(); st.status = 'paused'; }
+  else if (st.status === 'paused') { st.endAt = Date.now() + st.left; st.status = 'running'; }
+  else if (st.status === 'done') { st = { status: 'idle' }; }
+  save(); render();
+};
+
+$('reset').onclick = () => {
+  if (confirm('Stop this timer and reset it?')) { st = { status: 'idle' }; save(); render(); }
+};
+
+window.addEventListener('storage', e => { if (e.key === KEY) { st = load(); render(); } });
+document.addEventListener('visibilitychange', tick);
+
+if (st.task) $('task').value = st.task;
+tick();
+setInterval(tick, 250);
+</script>
+</body>
+</html>
